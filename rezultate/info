@@ -1,1 +1,9 @@
 Rezultatele simularilor
+
+.m (Script MATLAB): Acesta este codul sursă. Aici sunt algoritmii de simulare, generarea cadrelor și procesarea semnalului. 
+
+.mat (Date MATLAB): Reprezintă rezultatele salvate. Aceste fișiere păstrează variabilele, matricile și datele (ex. curbele BER sau constelațiile IQ) pe care le-a calculat codul.
+
+.bin (Fișier Binar): Conține informația hardware. Este un flux brut de date (eșantioanele I și Q mapate pe 8 biți) pe care utilitarul Radioconda le citește și le trimite direct în placa HackRF One pentru transmisia radio.
+
+.asv (AutoSave MATLAB): Este doar un fișier temporar de backup. MATLAB îl creează automat în fundal pentru a nu pierde codul dacă se blochează programul.
