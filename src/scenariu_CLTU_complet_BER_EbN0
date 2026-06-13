@@ -1,1 +1,390 @@
+clc;
+clear;
+close all;
 
+% SCENARIU CLTU
+% Formare CLTU + BPSK + RRC + analiza in timp/frecventa + simulare BER in functie de Eb/N0 + detectie Start Sequence si Tail Sequence
+
+rng(2);
+
+% 1. PARAMETRI SCENARIU CLTU
+
+% Structura CLTU
+numCodewords = 4;                 % numar codewords
+infoBitsPerCodeword = 56;         % biti utili / codeword
+parityBitsPerCodeword = 7;        % biti paritate
+fillerBitsPerCodeword = 1;        % bit filler
+codewordLength = 64;              % lungime codeword
+
+startSeq_hex = 'EB90';            % Start Sequence CLTU
+tailSeq_hex  = 'C5C5C5C5C5C5C579';% Tail Sequence CLTU
+
+% Modulare si filtrare
+sps = 8;                          % samples per symbol / factor de interpolare
+rolloff = 0.35;                   % factor rolloff RRC
+span = 10;                        % span filtru RRC in simboluri
+
+% BER
+EbN0_dB = 0:1:10;                 % valori Eb/N0 in dB
+numFramesBER = 500;               % numar CLTU-uri simulate pentru fiecare Eb/N0
+
+%% Filtru Root Raised Cosine
+
+rrcFilter = rcosdesign(rolloff, span, sps, "sqrt");
+
+%% Secvente Start si Tail
+
+startBits = hexToBits(startSeq_hex);
+tailBits  = hexToBits(tailSeq_hex);
+
+
+% 2. GENERARE CLTU PENTRU ANALIZA GRAFICA
+
+
+% Date utile CLTU
+numInfoBits = numCodewords * infoBitsPerCodeword;
+infoBits = randi([0 1], numInfoBits, 1);
+
+% Formare codewords simplificate de 64 biti
+codedBits = [];
+
+for cw = 1:numCodewords
+
+    block56 = infoBits((cw-1)*infoBitsPerCodeword + 1 : cw*infoBitsPerCodeword);
+
+    parity7 = generateSimpleParity7(block56);
+    fillerBit = false;
+
+    codeword64 = [logical(block56); parity7; fillerBit];
+
+    codedBits = [codedBits; codeword64];
+
+end
+
+% Formare CLTU = Start Sequence + date codate + Tail Sequence
+cltuBits = [startBits; codedBits; tailBits];
+
+% Verificare Start/Tail in conditii ideale
+startDetectedIdeal = isequal(cltuBits(1:length(startBits)), startBits);
+tailDetectedIdeal = isequal(cltuBits(end-length(tailBits)+1:end), tailBits);
+
+% Modulare BPSK
+% 0 -> -1
+% 1 -> +1
+bpskSymbols = 2 * double(cltuBits) - 1;
+
+% Filtrare Root Raised Cosine
+tx_RRC = upfirdn(bpskSymbols, rrcFilter, sps, 1);
+
+
+% 3. FIGURI PENTRU SCENARIUL CLTU
+
+%% Figura 1 - Semnal CLTU BPSK filtrat RRC in domeniul timp
+
+figure;
+plot(tx_RRC(1:min(600, length(tx_RRC))));
+grid on;
+xlabel("Esantion");
+ylabel("Amplitudine");
+title("Semnal CLTU BPSK filtrat RRC in domeniul timp");
+
+%% Figura 2 - Constelatie BPSK inainte de filtrare
+
+figure;
+scatter(real(bpskSymbols), zeros(size(bpskSymbols)), "o");
+grid on;
+xlabel("In-Phase");
+ylabel("Quadrature");
+title("Constelatie BPSK pentru CLTU inainte de filtrare");
+xlim([-1.5 1.5]);
+ylim([-1.5 1.5]);
+
+%% Figura 3 - Primii biti demodulati in conditii ideale
+
+rxBitsIdeal = bpskSymbols >= 0;
+
+figure;
+stem(rxBitsIdeal(1:min(120, length(rxBitsIdeal))), "filled");
+grid on;
+xlabel("Index bit");
+ylabel("Valoare bit");
+title("Primii biti demodulati din CLTU in conditii ideale");
+ylim([-0.2 1.2]);
+
+%% Figura 4 - Spectrul semnalului CLTU BPSK filtrat RRC
+
+figure;
+pwelch(tx_RRC, [], [], [], sps, "centered");
+title("Spectrul semnalului CLTU BPSK filtrat RRC");
+
+
+% 4. SIMULARE BER IN FUNCTIE DE Eb/N0 + DETECTIE START / TAIL
+
+BER_CLTU = zeros(length(EbN0_dB), 1);
+totalBitsBER = zeros(length(EbN0_dB), 1);
+totalErrorsBER = zeros(length(EbN0_dB), 1);
+
+StartDetectRate = zeros(length(EbN0_dB), 1);
+TailDetectRate = zeros(length(EbN0_dB), 1);
+
+fprintf("\n===== SIMULARE BER CLTU =====\n");
+
+for idx = 1:length(EbN0_dB)
+
+    ebn0 = EbN0_dB(idx);
+
+    totalErrors = 0;
+    totalBits = 0;
+
+    startOK = 0;
+    tailOK = 0;
+
+    for frame = 1:numFramesBER
+
+        %% Generare CLTU nou pentru fiecare cadru
+
+        infoBitsBER = randi([0 1], numInfoBits, 1);
+
+        codedBitsBER = [];
+
+        for cw = 1:numCodewords
+
+            block56 = infoBitsBER((cw-1)*infoBitsPerCodeword + 1 : cw*infoBitsPerCodeword);
+
+            parity7 = generateSimpleParity7(block56);
+            fillerBit = false;
+
+            codeword64 = [logical(block56); parity7; fillerBit];
+
+            codedBitsBER = [codedBitsBER; codeword64];
+
+        end
+
+        cltuBitsBER = [startBits; codedBitsBER; tailBits];
+
+        % BPSK
+        txSymbolsBER = 2 * double(cltuBitsBER) - 1;
+
+        % Canal AWGN in functie de Eb/N0
+        rxSymbolsBER = addAwgnEbN0(txSymbolsBER, ebn0);
+
+        % Demodulare BPSK
+        rxBitsBER = rxSymbolsBER >= 0;
+
+        % BER
+        bitErrors = sum(rxBitsBER ~= cltuBitsBER);
+
+        totalErrors = totalErrors + bitErrors;
+        totalBits = totalBits + length(cltuBitsBER);
+
+        % Detectie Start Sequence
+        rxStart = rxBitsBER(1:length(startBits));
+        if isequal(rxStart, startBits)
+            startOK = startOK + 1;
+        end
+
+        % Detectie Tail Sequence
+        rxTail = rxBitsBER(end-length(tailBits)+1:end);
+        if isequal(rxTail, tailBits)
+            tailOK = tailOK + 1;
+        end
+
+    end
+
+    BER_CLTU(idx) = totalErrors / totalBits;
+    totalBitsBER(idx) = totalBits;
+    totalErrorsBER(idx) = totalErrors;
+
+    StartDetectRate(idx) = startOK / numFramesBER;
+    TailDetectRate(idx) = tailOK / numFramesBER;
+
+    fprintf("Eb/N0 = %2d dB, BER CLTU = %.6e, Start OK = %.2f, Tail OK = %.2f, Erori = %d, Biti testati = %d\n", ...
+        ebn0, BER_CLTU(idx), StartDetectRate(idx), TailDetectRate(idx), totalErrors, totalBits);
+
+end
+
+%% Figura 5 - Curba BER CLTU
+
+BER_plot = BER_CLTU;
+
+for i = 1:length(BER_plot)
+    if BER_plot(i) == 0
+        BER_plot(i) = 1 / totalBitsBER(i);
+    end
+end
+
+figure;
+semilogy(EbN0_dB, BER_plot, "-o", "LineWidth", 1.5);
+grid on;
+xlabel("E_b/N_0 [dB]");
+ylabel("BER");
+title("Curba BER pentru scenariul CLTU");
+ylim([1e-7 1]);
+xlim([min(EbN0_dB) max(EbN0_dB)]);
+
+%% Figura 6 - Rata detectie Start/Tail
+
+figure;
+plot(EbN0_dB, StartDetectRate, "-o", "LineWidth", 1.5);
+hold on;
+plot(EbN0_dB, TailDetectRate, "-s", "LineWidth", 1.5);
+grid on;
+xlabel("E_b/N_0 [dB]");
+ylabel("Rata detectie");
+title("Rata de detectie Start Sequence si Tail Sequence");
+legend("Start Sequence", "Tail Sequence", "Location", "southeast");
+ylim([0 1.05]);
+xlim([min(EbN0_dB) max(EbN0_dB)]);
+
+% 5. TABELE REZULTATE
+
+Parametru = [
+    "Date utile";
+    "Numar codewords";
+    "Lungime codeword";
+    "Date codate";
+    "Start Sequence";
+    "Lungime Start Sequence";
+    "Tail Sequence";
+    "Lungime Tail Sequence";
+    "Lungime CLTU";
+    "Modulatie";
+    "Filtru";
+    "Samples per symbol";
+    "Rolloff";
+    "Span filtru RRC";
+    "Lungime semnal TX filtrat RRC";
+    "Start Sequence detectata ideal";
+    "Tail Sequence detectata ideal";
+    "BER in conditii ideale";
+    "Valori Eb/N0 testate";
+    "Numar cadre BER / Eb/N0"
+];
+
+Valoare = [
+    string(numInfoBits) + " biti";
+    string(numCodewords);
+    string(codewordLength) + " biti";
+    string(length(codedBits)) + " biti";
+    "0x" + string(startSeq_hex);
+    string(length(startBits)) + " biti";
+    "0x" + string(tailSeq_hex);
+    string(length(tailBits)) + " biti";
+    string(length(cltuBits)) + " biti";
+    "BPSK";
+    "Root Raised Cosine";
+    string(sps);
+    string(rolloff);
+    string(span) + " simboluri";
+    string(length(tx_RRC)) + " esantioane";
+    string(startDetectedIdeal);
+    string(tailDetectedIdeal);
+    "0";
+    string(EbN0_dB(1)) + "..." + string(EbN0_dB(end)) + " dB";
+    string(numFramesBER)
+];
+
+T_parametri_CLTU = table(Parametru, Valoare);
+
+T_BER_CLTU = table(EbN0_dB.', BER_CLTU, StartDetectRate, TailDetectRate, totalErrorsBER, totalBitsBER, ...
+    'VariableNames', {'EbN0_dB', 'BER_CLTU', 'Rata_Start_Detectat', 'Rata_Tail_Detectat', 'Numar_Erori', 'Numar_Biti_Testati'});
+
+disp(" ");
+disp("Tabel parametri CLTU:");
+disp(T_parametri_CLTU);
+
+disp(" ");
+disp("Tabel rezultate BER CLTU:");
+disp(T_BER_CLTU);
+
+% 6. SALVARE REZULTATE
+
+save("rezultate_scenariu_CLTU_complet_BER_EbN0.mat", ...
+    "infoBits", ...
+    "codedBits", ...
+    "startSeq_hex", ...
+    "tailSeq_hex", ...
+    "startBits", ...
+    "tailBits", ...
+    "cltuBits", ...
+    "bpskSymbols", ...
+    "tx_RRC", ...
+    "sps", ...
+    "rolloff", ...
+    "span", ...
+    "EbN0_dB", ...
+    "BER_CLTU", ...
+    "StartDetectRate", ...
+    "TailDetectRate", ...
+    "totalErrorsBER", ...
+    "totalBitsBER", ...
+    "T_parametri_CLTU", ...
+    "T_BER_CLTU");
+
+fprintf("\n===== REZUMAT SCENARIU CLTU =====\n");
+fprintf("Date utile generate: %d biti\n", numInfoBits);
+fprintf("Numar codewords: %d\n", numCodewords);
+fprintf("Lungime codeword: %d biti\n", codewordLength);
+fprintf("Lungime date codate: %d biti\n", length(codedBits));
+fprintf("Start Sequence: 0x%s\n", startSeq_hex);
+fprintf("Lungime Start Sequence: %d biti\n", length(startBits));
+fprintf("Tail Sequence: 0x%s\n", tailSeq_hex);
+fprintf("Lungime Tail Sequence: %d biti\n", length(tailBits));
+fprintf("Lungime CLTU: %d biti\n", length(cltuBits));
+fprintf("Start Sequence detectata ideal: %d\n", startDetectedIdeal);
+fprintf("Tail Sequence detectata ideal: %d\n", tailDetectedIdeal);
+fprintf("BER ideal: 0\n");
+fprintf("Modulatie: BPSK\n");
+fprintf("Filtru RRC: sps = %d, rolloff = %.2f, span = %d simboluri\n", ...
+    sps, rolloff, span);
+fprintf("Lungime semnal TX filtrat RRC: %d esantioane\n", length(tx_RRC));
+fprintf("Fisier salvat: rezultate_scenariu_CLTU_complet_BER_EbN0.mat\n");
+fprintf("=================================\n");
+
+
+% FUNCTII LOCALE
+
+
+function bits = hexToBits(hexStr)
+
+    hexStr = char(hexStr);
+    bits = [];
+
+    for i = 1:length(hexStr)
+        value = hex2dec(hexStr(i));
+        nibble = de2bi(value, 4, "left-msb").';
+        bits = [bits; nibble];
+    end
+
+    bits = logical(bits);
+
+end
+
+function parity7 = generateSimpleParity7(block56)
+
+    block56 = logical(block56);
+    parity7 = false(7,1);
+
+    for i = 1:7
+        parity7(i) = mod(sum(block56(i:7:end)), 2);
+    end
+
+    parity7 = ~parity7;
+
+end
+
+function rx = addAwgnEbN0(tx, EbN0_dB)
+
+    % Pentru BPSK normalizat:
+    % simbolurile sunt -1 si +1, deci Eb = 1.
+    % Eb/N0 este convertit din dB in valoare liniara.
+    % Pentru zgomot real AWGN, varianta zgomotului este N0/2.
+
+    EbN0_linear = 10^(EbN0_dB / 10);
+    noiseVariance = 1 / (2 * EbN0_linear);
+
+    noise = sqrt(noiseVariance) * randn(size(tx));
+
+    rx = tx + noise;
+
+end
